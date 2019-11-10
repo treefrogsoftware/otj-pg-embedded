@@ -14,8 +14,8 @@
 package com.opentable.db.postgres.embedded;
 
 
-import static com.opentable.db.postgres.embedded.EmbeddedUtil.getWorkingDirectory;
-import static com.opentable.db.postgres.embedded.EmbeddedUtil.mkdirs;
+import static com.opentable.db.postgres.embedded.EmbeddedPostgres.Builder.PG_USER;
+import static com.opentable.db.postgres.embedded.EmbeddedUtil.*;
 
 import java.io.Closeable;
 import java.io.File;
@@ -51,6 +51,7 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import liquibase.util.StringUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.io.IOUtils;
@@ -95,6 +96,7 @@ public class EmbeddedPostgres implements Closeable
 
     private final ProcessBuilder.Redirect errorRedirector;
     private final ProcessBuilder.Redirect outputRedirector;
+    private final String postgresProcessUser;
 
     EmbeddedPostgres(File parentDirectory, File dataDirectory, boolean cleanDataDirectory,
         Map<String, String> postgresConfig, Map<String, String> localeConfig, int port, Map<String, String> connectConfig,
@@ -112,6 +114,8 @@ public class EmbeddedPostgres implements Closeable
     {
 
         this.cleanDataDirectory = cleanDataDirectory;
+        this.postgresProcessUser = postgresConfig.get(PG_USER);
+        postgresConfig.remove(PG_USER);//remove otherwise database intialisation fails
         this.postgresConfig = new HashMap<>(postgresConfig);
         this.localeConfig = new HashMap<>(localeConfig);
         this.port = port;
@@ -211,15 +215,42 @@ public class EmbeddedPostgres implements Closeable
     }
 
     private void initdb() {
+        if(isRootUser() && !StringUtils.isEmpty(postgresConfig.get(PG_USER))) {
+            String runAsMe = postgresConfig.get(PG_USER);
+        } else if(isRootUser() && StringUtils.isEmpty(postgresConfig.get(PG_USER)) && !SystemUtils.IS_OS_WINDOWS) {
+            throw new RuntimeException("initdb can not be run as a root user either run as another os user or create one and use setPgProcessUser");
+        }
+
         final StopWatch watch = new StopWatch();
+        chownRootDirectories();
         watch.start();
-        List<String> command = new ArrayList<>();
+        List<String> command = checkSudoCommand();
         command.addAll(Arrays.asList(
                 pgBin("initdb"), "-A", "trust", "-U", PG_SUPERUSER,
                 "-D", dataDirectory.getPath(), "-E", "UTF-8"));
         command.addAll(createLocaleOptions());
         system(command.toArray(new String[command.size()]));
         LOG.info("{} initdb completed in {}", instanceId, watch);
+    }
+
+    private void chownRootDirectories() {
+        if(isRootOnOsxOrLinux()) {
+            List<String> chownCommand = Arrays.asList("chown", "-R", postgresProcessUser, this.pgDir.getAbsolutePath());
+            system(chownCommand.toArray(new String[chownCommand.size()]));
+        }
+    }
+
+    private boolean isRootOnOsxOrLinux() {
+        return postgresProcessUser != null && isRootUser() && !SystemUtils.IS_OS_WINDOWS;
+    }
+
+    private List<String> checkSudoCommand() {
+        List<String> command = new ArrayList<>();
+        if(isRootOnOsxOrLinux()) {
+            command.addAll(Arrays.asList("sudo", "-u", postgresProcessUser));
+        }
+
+        return command;
     }
 
     private void startPostmaster(Map<String, String> connectConfig) throws IOException {
@@ -229,7 +260,7 @@ public class EmbeddedPostgres implements Closeable
             throw new IllegalStateException("Postmaster already started");
         }
 
-        final List<String> args = new ArrayList<>();
+        final List<String> args = checkSudoCommand();
         args.addAll(Arrays.asList(
                 pgBin("pg_ctl"),
                 "-D", dataDirectory.getPath(),
@@ -383,7 +414,9 @@ public class EmbeddedPostgres implements Closeable
     }
 
     private void pgCtl(File dir, String action) {
-        system(pgBin("pg_ctl"), "-D", dir.getPath(), action, "-m", PG_STOP_MODE, "-t", PG_STOP_WAIT_S, "-w");
+        List<String> command = checkSudoCommand();
+        command.addAll(Arrays.asList(pgBin("pg_ctl"), "-D", dir.getPath(), action, "-m", PG_STOP_MODE, "-t", PG_STOP_WAIT_S, "-w"));
+        system(command.toArray(new String[command.size()]));
     }
 
     private void cleanOldDataDirectories(File parentDirectory) {
@@ -443,6 +476,7 @@ public class EmbeddedPostgres implements Closeable
     }
 
     public static class Builder {
+        static final String PG_USER = "pguser";
         private final File parentDirectory = getWorkingDirectory();
         private Optional<File> overrideWorkingDirectory = Optional.empty(); // use tmpdir
         private File builderDataDirectory;
@@ -493,6 +527,11 @@ public class EmbeddedPostgres implements Closeable
 
         public Builder setServerConfig(String key, String value) {
             config.put(key, value);
+            return this;
+        }
+
+        public Builder setPgProcessUser(String value) {
+            config.put(PG_USER, value);
             return this;
         }
 

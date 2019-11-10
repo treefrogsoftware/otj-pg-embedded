@@ -56,6 +56,34 @@ public class EmbeddedPostgresTest
         }
     }
 
+    @Test(expected = RuntimeException.class)
+    public void testEmbeddedPgCreationAsRootUserRaisingRuntimeException() throws Exception
+    {
+        String userName = System.getProperty("user.name");
+        System.setProperty("user.name", "root");
+        try (EmbeddedPostgres pg = EmbeddedPostgres.builder()
+                .start()) {
+            // nothing to do
+        } finally {
+            System.setProperty("user.name", userName);
+        }
+    }
+
+    @Test
+    public void testEmbeddedPgCreationAsRootUserButPgUserSet() throws Exception
+    {
+        String userName = System.getProperty("user.name");
+      //  System.setProperty("user.name", "root");
+        try (EmbeddedPostgres pg = EmbeddedPostgres.builder()
+                .setDataDirectory(tf.newFolder("data-dir-parent") + "/data-dir")
+                .setPgProcessUser("postgres")
+                .start()) {
+            // nothing to do
+        } finally {
+  //          System.setProperty("user.name", userName);
+        }
+    }
+
     @Test
     public void testValidLocaleSettingsPassthrough() throws IOException {
         try {

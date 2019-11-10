@@ -160,4 +160,8 @@ final class EmbeddedUtil {
             phaser.arriveAndAwaitAdvance();
         }
     }
+
+    public static boolean isRootUser() {
+        return "root".equals(System.getProperty("user.name"));
+    }
 }
